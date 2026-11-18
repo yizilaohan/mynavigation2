@@ -137,26 +137,13 @@ class NavigationRewrittenYaml(RewrittenYaml):
             document = yaml.safe_load(stream)
         namespace = perform_substitutions(context, normalize_to_list_of_substitutions(self.navigation_kwargs.get('root_key') or ''))
         config = document[namespace] if namespace else document
-        # 规划器开关：hybrid 保持第四模式原行为；lattice 改用状态格一次搜索。
-        fixed_planner = LaunchConfiguration('autonomous_fixed_planner', default='hybrid').perform(context).strip().lower()
-        if fixed_planner not in ('hybrid', 'lattice'):
-            raise ValueError("autonomous_fixed_planner must be 'hybrid' or 'lattice'")
-        use_lattice = fixed_planner == 'lattice'
-        # 状态格模式当前使用 diff 基元（16 headings，间隔 22.5deg，半格 11.25deg）。
-        # 终点朝向阈值 9deg 沿用原 48-heading 配置，比该基元半格更严，末段朝向余量偏小。
-        # hybrid 模式沿用原减半要求。
-        lattice_yaw = 0.15726646259971647
-        lattice_file = os.path.join(
-            get_package_share_directory('nav2_smac_planner'),
-            'sample_primitives', '5cm_resolution', '0.5m_turning_radius', 'diff', 'output.json')
-        # Only this mode uses a rectangular envelope and wider obstacle cost field.
-        footprint = '[[0.4, 0.3], [0.4, -0.3], [-0.4, -0.3], [-0.4, 0.3]]' if use_lattice else '[[0.6, 0.45], [0.6, -0.45], [-0.6, -0.45], [-0.6, 0.45]]'
-        inflation = 0.90 if use_lattice else 0.40
+        # Only this mode uses the requested 0.8 x 0.6 m envelope and wider obstacle cost field.
+        footprint = '[[0.6, 0.45], [0.6, -0.45], [-0.6, -0.45], [-0.6, 0.45]]'
         for name in ['global_costmap', 'local_costmap']:
             costmap = config[name][name]['ros__parameters']
             costmap.update(footprint=footprint, footprint_padding=0.0)
             costmap.pop('robot_radius', None)
-            costmap['inflation_layer'].update(inflation_radius=inflation, cost_scaling_factor=2.5)
+            costmap['inflation_layer'].update(inflation_radius=0.40, cost_scaling_factor=2.5)
         navigator = config['regulated_navigator']['ros__parameters']
         # Budget the error against the original action goal, including planner quantization.
         final_xy = float(navigator.get('autonomous_fixed_xy_tolerance', 0.01))
@@ -174,39 +161,22 @@ class NavigationRewrittenYaml(RewrittenYaml):
                     [localization_timeout, tracking_localization_timeout, terminal_localization_distance])
                 or tracking_localization_timeout < localization_timeout):
             raise ValueError('autonomous_fixed localization timeouts and terminal distance must be positive; tracking timeout must cover the strict timeout')
-        navigator.update(operation_mode='autonomous_fixed',
-                         planner_id='SmacLattice' if use_lattice else 'SmacHybrid',
+        navigator.update(operation_mode='autonomous_fixed', planner_id='SmacHybrid',
                          controller_id='AutonomousFixedPathController',
                          goal_checker_id='autonomous_fixed_goal_checker', use_smoother=False,
                          progress_timeout=10.0, replan_frequency=1.0,
                          autonomous_fixed_xy_tolerance=final_xy,
-                         # 中间段复核容差与 cusp goal checker 对齐；状态格模式的终点旋转会带来厘米级滑移。
-                         autonomous_fixed_cusp_xy_tolerance=0.02 if use_lattice else 0.01,
-                         # 分段判据必须与控制器一致，否则 navigator 认为的单段会被控制器再次切分。
-                         autonomous_fixed_rotation_distance=0.025 if use_lattice else 1e-6,
-                         # 旋转段位置验收半径，与控制器 rotation_position_tolerance 保持一致。
-                         autonomous_fixed_rotation_position_tolerance=0.05 if use_lattice else 0.0,
                          autonomous_fixed_short_pause_timeout=short_pause_timeout,
                          autonomous_fixed_resume_stable_duration=resume_stable_duration,
                          autonomous_fixed_tracking_localization_timeout=tracking_localization_timeout,
                          autonomous_fixed_terminal_localization_distance=terminal_localization_distance)
         planner = config['planner_server']['ros__parameters']
-        if use_lattice:
-            # 基元允许倒车：冻结路径按换向切段，段间短拼接残差按旋转段处理。
-            # 内部平滑保持关闭，确保每个采样点保留自身状态格朝向。
-            planner['planner_plugins'] = ['SmacLattice']
-            planner['selected_planner'] = 'SmacLattice'
-            planner.setdefault('SmacLattice', {}).update(
-                plugin='nav2_regulated_modules::AutonomousLatticePlanner',
-                lattice_filepath=lattice_file, tolerance=endpoint_budget,
-                allow_reverse_expansion=True, max_planning_time=3.5, smooth_path=False)
-        else:
-            planner['planner_plugins'] = ['SmacHybrid']
-            planner['selected_planner'] = 'SmacHybrid'
-            planner['SmacHybrid'].update(plugin='nav2_regulated_modules::AutonomousFixedHybridPlanner',
-                                        motion_model_for_search='REEDS_SHEPP', tolerance=endpoint_budget,
-                                        minimum_turning_radius=0.40, max_planning_time=3.5, smooth_path=True,
-                                        lookup_table_size=10.0)
+        planner['planner_plugins'] = ['SmacHybrid']
+        planner['selected_planner'] = 'SmacHybrid'
+        planner['SmacHybrid'].update(plugin='nav2_regulated_modules::AutonomousFixedHybridPlanner',
+                                    motion_model_for_search='REEDS_SHEPP', tolerance=endpoint_budget,
+                                    minimum_turning_radius=0.40, max_planning_time=3.5, smooth_path=True,
+                                    lookup_table_size=10.0)
         controller = config['controller_server']['ros__parameters']
         controller.update(controller_frequency=100.0,
                           controller_plugins=['AutonomousFixedPathController'],
@@ -231,10 +201,6 @@ class NavigationRewrittenYaml(RewrittenYaml):
             'terminal_trim_max_distance': 0.03, 'terminal_trim_timeout': 5.0,
             'terminal_trim_max_attempts': 2, 'terminal_trim_confirm_duration': 0.2,
             'max_angular_velocity': 0.4, 'max_angular_acceleration': 0.8,
-            # 状态格网格上的纯旋转基元可能残留几毫米位移，按 2.5 cm 归为旋转段；
-            # 旋转段无位移可消除误差，位置验收放宽到 5 cm 以吸收格心量化。
-            'rotation_distance': 0.025 if use_lattice else 1e-6,
-            'rotation_position_tolerance': 0.05 if use_lattice else 0.0,
             'localization_timeout': localization_timeout,
             'tracking_localization_timeout': tracking_localization_timeout,
             'terminal_localization_distance': terminal_localization_distance,
@@ -244,10 +210,8 @@ class NavigationRewrittenYaml(RewrittenYaml):
             'resume_linear_acceleration': 0.5,
             'obstacle_timeout': float(navigator.get('autonomous_fixed_obstacle_timeout', 60.0)),
         }
-        final_yaw = lattice_yaw if use_lattice else float(navigator.get('autonomous_fixed_yaw_tolerance', 0.15726646259971647)) * 0.5
-        cusp_xy = 0.02 if use_lattice else 0.01
-        for name, xy, yaw in [('autonomous_fixed_goal_checker', final_xy - endpoint_budget, final_yaw),
-                              ('autonomous_fixed_cusp_checker', cusp_xy, 0.08726646259971647)]:
+        for name, xy, yaw in [('autonomous_fixed_goal_checker', final_xy - endpoint_budget, float(navigator.get('autonomous_fixed_yaw_tolerance', 0.15726646259971647)) * 0.5),
+                              ('autonomous_fixed_cusp_checker', 0.01, 0.08726646259971647)]:
             controller[name] = {'plugin': 'nav2_controller::StoppedGoalChecker', 'stateful': False,
                                 'xy_goal_tolerance': xy, 'yaw_goal_tolerance': yaw,
                                 'trans_stopped_velocity': 0.01, 'rot_stopped_velocity': 0.05}
@@ -393,7 +357,9 @@ def generate_launch_description():
     use_collision_velocity_gate = LaunchConfiguration('use_collision_velocity_gate', default='false')
     use_obstacle_status = LaunchConfiguration('use_obstacle_status', default='true')
     use_car_op_status_sim = LaunchConfiguration('use_car_op_status_sim', default='true')
-    car_op_status_value = LaunchConfiguration('car_op_status_value', default='0')
+    # ooii: 新接口 RobotMoveState（uint8 九值 0–8）；默认 7 = 静止。
+    car_op_status_value = LaunchConfiguration('car_op_status_value', default='7')
+    car_op_status_topic = LaunchConfiguration('car_op_status_topic', default='/robot_move_state')
     scan_topic = LaunchConfiguration('scan_topic', default='/c200_lidar_node/scan')
     zone_frame = LaunchConfiguration('zone_frame', default='base_link')
     use_collision_visualization = LaunchConfiguration('use_collision_visualization')
@@ -545,16 +511,22 @@ def generate_launch_description():
         default_value='true',
         description='With use_collision_monitor: start obstacle_status_translator and publish /collision_state + /obstacle_status_int; it never publishes /cmd_vel')
 
-    # 默认 /car_op_status 状态源；其它发布者出现时自动让位。
+    # 默认 RobotMoveState 状态源；其它发布者出现时自动让位。
     declare_use_car_op_status_sim_cmd = DeclareLaunchArgument(
         'use_car_op_status_sim',
         default_value='true',
-        description='With use_collision_monitor: start the default /car_op_status source; it yields while another publisher exists')
+        description='With use_collision_monitor: start the default RobotMoveState source; it yields while another publisher exists')
 
     declare_car_op_status_value_cmd = DeclareLaunchArgument(
         'car_op_status_value',
-        default_value='0',
-        description='Default source hold value 0-8 (0 = idle forward)')
+        default_value='7',
+        description='ooii: default source robot_move_state 0-8 (7 = stationary)')
+
+    # ooii: 状态话题名；实车行为解析模块改名时从这里覆盖。
+    declare_car_op_status_topic_cmd = DeclareLaunchArgument(
+        'car_op_status_topic',
+        default_value='/robot_move_state',
+        description='ooii: byd_custom_msgs/RobotMoveState topic shared by the default source and car_op_zones')
 
     declare_scan_topic_cmd = DeclareLaunchArgument(
         'scan_topic',
@@ -931,7 +903,9 @@ def generate_launch_description():
             parameters=[{'use_sim_time': use_sim_time}],
             # 实车入口固定用实车尺寸档（1.2 × 0.8 m）；仿真入口传 --profile sim。
             arguments=['--drive-monitor', '--frame-id', zone_frame, '--period', '0.1',
-                       '--profile', 'real']),
+                       '--profile', 'real',
+                       # ooii: 新接口 RobotMoveState；话题由 car_op_status_topic 统一。
+                       '--op-topic', car_op_status_topic]),
         Node(
             condition=IfCondition(PythonExpression([
                 "'", use_collision_monitor, "'.lower() == 'true' and '",
@@ -942,7 +916,7 @@ def generate_launch_description():
             output='screen',
             parameters=[{'use_sim_time': use_sim_time}],
             arguments=['--mode', 'hold', '--value', car_op_status_value,
-                       '--topic', '/car_op_status', '--yield-to-other-publishers']),
+                       '--topic', car_op_status_topic, '--yield-to-other-publishers']),
         Node(
             condition=IfCondition(PythonExpression([
                 "'", use_collision_monitor, "'.lower() == 'true' and '",
@@ -995,8 +969,6 @@ def generate_launch_description():
                                        description='Autonomous planner ID; empty follows YAML, ignored outside autonomous mode'))
     ld.add_action(DeclareLaunchArgument('autonomous_mppi_profile', default_value='false',
                                        description='Use the simulation autonomous MPPI wrapper; ignored outside autonomous mode'))
-    ld.add_action(DeclareLaunchArgument('autonomous_fixed_planner', default_value='hybrid',
-                                       description="Planner for autonomous_fixed: 'hybrid' (default, existing behaviour) or 'lattice' (state-lattice one-shot search)"))
     ld.add_action(DeclareLaunchArgument('enable_legacy_velocity_logs', default_value='false'))
     ld.add_action(DeclareLaunchArgument('log_dir', default_value=EnvironmentVariable('SPDLOG_WRAPPER_LOG_DIR', default_value='/tmp/nav2_logs')))
     ld.add_action(DeclareLaunchArgument('velocity_file_log_frequency', default_value=PythonExpression(["'50.0' if '", LaunchConfiguration('operation_mode', default='fixed_path'), "' == 'autonomous' else '100.0'"])))
@@ -1033,6 +1005,7 @@ def generate_launch_description():
     ld.add_action(declare_use_obstacle_status_cmd)
     ld.add_action(declare_use_car_op_status_sim_cmd)
     ld.add_action(declare_car_op_status_value_cmd)
+    ld.add_action(declare_car_op_status_topic_cmd)   # ooii: RobotMoveState 话题
     ld.add_action(declare_scan_topic_cmd)
     ld.add_action(declare_zone_frame_cmd)
     ld.add_action(declare_use_collision_visualization_cmd)

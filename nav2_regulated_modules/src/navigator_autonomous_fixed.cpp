@@ -38,9 +38,7 @@ void RegulatedNavigator::freezeAutonomousPath(const nav_msgs::msg::Path & path)
     {
       throw std::invalid_argument("Frozen path already exists or has an unexpected frame");
     }
-    // 分段判据必须与控制器一致：状态格路径基元拼接点常残留不足半格的位移，
-    // 其方向由两端点相减得到，不可用于行驶方向判定，需按半格归为旋转段。
-    const auto segments = detail::splitFixedPath(path, get_parameter("autonomous_fixed_rotation_distance").as_double());
+    const auto segments = detail::splitFixedPath(path);
     const double endpoint_budget = std::min(0.003, 0.3 * get_parameter("autonomous_fixed_xy_tolerance").as_double());
     if (detail::fixedDistance(path.poses.back(), task_.goal) > endpoint_budget || std::abs(detail::fixedAngle(tf2::getYaw(path.poses.back().pose.orientation) - tf2::getYaw(task_.goal.pose.orientation))) > get_parameter("autonomous_fixed_yaw_tolerance").as_double())
     {
@@ -117,12 +115,7 @@ void RegulatedNavigator::finishFrozenSegment()
   const auto & segment = frozen_segments_.at(frozen_segment_);
   const bool final = frozen_segment_ + 1 == frozen_segments_.size();
   const auto & target = final ? task_.goal : frozen_path_.poses[segment.last];
-  // 中间段复核容差可配置：状态格模式下终点旋转会引起厘米级滑移，需与 cusp goal checker 对齐。
-  // 旋转段没有位移可供收敛，与控制器一样改用独立的位置验收半径。
-  const double cusp_xy = get_parameter("autonomous_fixed_cusp_xy_tolerance").as_double();
-  const double rotation_xy = get_parameter("autonomous_fixed_rotation_position_tolerance").as_double();
-  const double xy = final ? get_parameter("autonomous_fixed_xy_tolerance").as_double()
-                          : (segment.rotation && rotation_xy > 0.0 ? std::max(cusp_xy, rotation_xy) : cusp_xy);
+  const double xy = final ? get_parameter("autonomous_fixed_xy_tolerance").as_double() : 0.01;
   const double yaw = final ? get_parameter("autonomous_fixed_yaw_tolerance").as_double() : 0.08726646259971647;
   if (!lookupCurrentPose(pose) || !fixedVelocityStopped() || detail::fixedDistance(pose, target) > xy || std::abs(detail::fixedAngle(tf2::getYaw(pose.pose.orientation) - tf2::getYaw(target.pose.orientation))) > yaw)
   {

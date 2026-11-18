@@ -30,7 +30,9 @@ def generate_launch_description():
     use_collision_monitor = LaunchConfiguration('use_collision_monitor', default='false')
     use_obstacle_status = LaunchConfiguration('use_obstacle_status', default='true')
     use_car_op_status_sim = LaunchConfiguration('use_car_op_status_sim', default='true')
-    car_op_status_value = LaunchConfiguration('car_op_status_value', default='0')
+    # ooii: 新接口 RobotMoveState（uint8 九值 0–8）；默认 7 = 静止。
+    car_op_status_value = LaunchConfiguration('car_op_status_value', default='7')
+    car_op_status_topic = LaunchConfiguration('car_op_status_topic', default='/robot_move_state')
     scan_topic = LaunchConfiguration('scan_topic', default='/c200_lidar_node/scan')
     use_sim_time = LaunchConfiguration('use_sim_time', default='false')
     zone_frame = LaunchConfiguration('zone_frame', default='base_link')
@@ -55,7 +57,7 @@ def generate_launch_description():
             output='screen',
             parameters=[{'use_sim_time': use_sim_time}],
             arguments=['--mode', 'hold', '--value', car_op_status_value,
-                       '--topic', '/car_op_status', '--yield-to-other-publishers'],
+                       '--topic', car_op_status_topic, '--yield-to-other-publishers'],
         ),
         # 按作业状态输出三级动态碰撞框。
         Node(
@@ -66,7 +68,8 @@ def generate_launch_description():
             output='screen',
             parameters=[{'use_sim_time': use_sim_time}],
             arguments=['--drive-monitor', '--frame-id', zone_frame, '--period', '0.1',
-                       '--profile', zones_profile],
+                       '--profile', zones_profile,
+                       '--op-topic', car_op_status_topic],   # ooii: RobotMoveState
         ),
         # 雷达 + 动态框 -> /collision_state 与 /obstacle_status_int；不碰速度。
         Node(
@@ -95,10 +98,13 @@ def generate_launch_description():
             description='Start obstacle_status_translator and publish /collision_state + /obstacle_status_int; the translator never publishes /cmd_vel'),
         DeclareLaunchArgument(
             'use_car_op_status_sim', default_value='true',
-            description='Start the default /car_op_status source; it yields while another publisher exists'),
+            description='Start the default RobotMoveState source; it yields while another publisher exists'),
         DeclareLaunchArgument(
-            'car_op_status_value', default_value='0',
-            description='Default source hold value 0-8 (0 = idle forward)'),
+            'car_op_status_value', default_value='7',
+            description='ooii: default source robot_move_state 0-8 (7 = stationary)'),
+        DeclareLaunchArgument(
+            'car_op_status_topic', default_value='/robot_move_state',
+            description='ooii: byd_custom_msgs/RobotMoveState topic shared by the default source and car_op_zones'),
         DeclareLaunchArgument(
             'scan_topic', default_value='/c200_lidar_node/scan',
             description='Laser scan topic used by the translator'),

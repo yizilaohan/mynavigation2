@@ -60,7 +60,6 @@ void LatticeMotionTable::initMotionModel(
   non_straight_penalty = search_info.non_straight_penalty;
   cost_penalty = search_info.cost_penalty;
   reverse_penalty = search_info.reverse_penalty;
-  direction_change_penalty = search_info.direction_change_penalty;
   travel_distance_reward = 1.0f - search_info.retrospective_penalty;
   current_lattice_filepath = search_info.lattice_filepath;
   allow_reverse_expansion = search_info.allow_reverse_expansion;
@@ -306,11 +305,6 @@ float NodeLattice::getTraversalCost(const NodePtr & child)
       travel_cost = travel_cost_raw *
         (motion_table.non_straight_penalty + motion_table.change_penalty);
     }
-  }
-
-  // 前进与倒车之间互相切换时乘上额外倍率；默认 1.0 时与原代价完全一致。
-  if (child->isBackward() != this->isBackward()) {
-    travel_cost *= motion_table.direction_change_penalty;
   }
 
   // If backwards flag is set, this primitive is moving in reverse

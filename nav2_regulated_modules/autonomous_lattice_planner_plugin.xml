@@ -1,7 +1,0 @@
-<library path="nav2_regulated_modules_autonomous_lattice_planner">
-  <class name="nav2_regulated_modules::AutonomousLatticePlanner"
-         type="nav2_regulated_modules::AutonomousLatticePlanner"
-         base_class_type="nav2_core::GlobalPlanner">
-    <description>One state-lattice search with collision-checked grid-center and heading correction before freezing.</description>
-  </class>
-</library>

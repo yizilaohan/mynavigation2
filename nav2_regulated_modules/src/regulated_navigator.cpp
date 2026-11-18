@@ -55,12 +55,6 @@ RegulatedNavigator::RegulatedNavigator(const rclcpp::NodeOptions & options) : na
   declare_parameter("autonomous_fixed_max_speed", 0.5);
   declare_parameter("autonomous_fixed_xy_tolerance", get_parameter("operation_mode").as_string() == "autonomous_fixed" ? 0.01 : 0.03);
   declare_parameter("autonomous_fixed_yaw_tolerance", 0.15726646259971647);
-  // 中间段（换向点）位置复核容差：默认 1 cm 与原行为一致；状态格模式需放宽以吸收旋转滑移。
-  declare_parameter("autonomous_fixed_cusp_xy_tolerance", 0.01);
-  // 冻结路径分段判据，必须与控制器一致；状态格路径的毫米级拼接残差需按半格归为旋转段。
-  declare_parameter("autonomous_fixed_rotation_distance", 1e-6);
-  // 旋转段的位置验收半径，与控制器同名参数一致；默认 0 表示沿用中间段容差。
-  declare_parameter("autonomous_fixed_rotation_position_tolerance", 0.0);
   declare_parameter("autonomous_fixed_obstacle_timeout", 60.0);
   declare_parameter("autonomous_fixed_resume_distance", 0.20);
   if (get_parameter("operation_mode").as_string() == "autonomous_fixed")
@@ -327,7 +321,7 @@ nav2_util::CallbackReturn RegulatedNavigator::on_configure(const rclcpp_lifecycl
   {
     const std::vector<std::string> fixed_parameters =
     {
-      "autonomous_fixed_max_speed", "autonomous_fixed_xy_tolerance", "autonomous_fixed_yaw_tolerance", "autonomous_fixed_cusp_xy_tolerance", "autonomous_fixed_rotation_distance", "autonomous_fixed_obstacle_timeout", "autonomous_fixed_resume_distance", "autonomous_fixed_short_pause_timeout", "autonomous_fixed_resume_stable_duration", "autonomous_fixed_tracking_localization_timeout", "autonomous_fixed_terminal_localization_distance"
+      "autonomous_fixed_max_speed", "autonomous_fixed_xy_tolerance", "autonomous_fixed_yaw_tolerance", "autonomous_fixed_obstacle_timeout", "autonomous_fixed_resume_distance", "autonomous_fixed_short_pause_timeout", "autonomous_fixed_resume_stable_duration", "autonomous_fixed_tracking_localization_timeout", "autonomous_fixed_terminal_localization_distance"
     };
     for (const auto & parameter : fixed_parameters)
     {

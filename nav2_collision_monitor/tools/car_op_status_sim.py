@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""模拟行为解析模块：按接口文档周期发布 /car_op_status（std_msgs/msg/Int32）。
+"""模拟行为解析模块：按 V0.2 协议周期发布 /robot_move_state
+（byd_custom_msgs/msg/RobotMoveState）。
 
 只发布状态，不做任何碰撞判定、不生成速度命令。可选用 --mock-motion 同时发布
 /motion_state（byd_custom_msgs/msg/MotionState），让状态消费端脱离整车也能跑通。
 
-接口文档约定：发布周期 100 ms，数据类型 std_msgs/msg/Int32。
+ooii: 2026-11 接口从 std_msgs/Int32（CarGmstatus 0–7）换成
+byd_custom_msgs/RobotMoveState（uint8 robot_move_state 九值 0–8，V0.2 定稿，
+QoS RELIABLE），话题 /robot_move_state，发布周期 100 ms。change_seq 在每次
+状态切换时 +1，周期重发保持不变。
 
-枚举即 9 个设计状态：枚举值 0–8 ↔ 设计状态号 1–9（差 1）。空载/载货、
-正走/倒走已内建在每个设计状态里，不需要额外的方向位或载货位。
-消费端取值 +1 即设计状态号，细节见本包 doc/OBSTACLE_STATUS.md。
+九值 → 9 个设计状态的映射在 car_op_zones.py 里；本脚本只负责按接口原样发状态。
 """
 import argparse
 import math
@@ -17,33 +19,31 @@ import sys
 import time
 
 
-# /car_op_status 的整数取值即线上传输的 Int32 载荷。取值 0–8，对应设计状态 1–9（差 1）。
-# 顺序与 doc/collision_zones/gen_zones.py 的 STATES 一致，空载/载货/正走/倒走已内建。
-class CarGmstatus:
-    IDLE_FORWARD = 0     # 状态1 空载正走
-    IDLE_BACKWARD = 1    # 状态2 空载倒走
-    GRAB_APPROACH = 2    # 状态3 正走抓料框
-    CARGO_BACKWARD = 3   # 状态4 搬货倒走
-    CARGO_FORWARD = 4    # 状态5 搬货正走
-    STATIONARY = 5       # 状态6 静止
-    SPIN_IN_PLACE = 6    # 状态7 原地旋转
-    DOCK_CHARGE = 7      # 状态8 去充电（屏蔽前方）
-    UNDOCK_LEAVE = 8     # 状态9 充电结束离开（屏蔽后方）
+# ooii: RobotMoveState V0.2 的九值（与 msg 里常量一一对应）。
+class RobotMoveStateValue:
+    UNKNOWN = 0
+    MOVING_FORWARD = 1
+    MOVING_BACKWARD = 2
+    MOVING_FORWARD_TO_PICK = 3
+    MOVING_FORWARD_TO_PLACE = 4
+    MOVING_DIR_UNKNOWN = 5
+    ROTATING = 6
+    STATIONARY = 7
+    PAUSED = 8
 
-# 枚举值 → 设计状态号（设计文档 1–9）。
-OP_TO_STATE = {v: v + 1 for v in range(9)}
+ALL_STATES = tuple(range(0, 9))
 
-# 枚举值 → 中文名（取自设计文档），仅用于日志。
+# ooii: 状态值 → 中文名，仅用于日志。
 NAME_OF = {
-    CarGmstatus.IDLE_FORWARD: '空载正走',
-    CarGmstatus.IDLE_BACKWARD: '空载倒走',
-    CarGmstatus.GRAB_APPROACH: '正走抓料框',
-    CarGmstatus.CARGO_BACKWARD: '搬货倒走',
-    CarGmstatus.CARGO_FORWARD: '搬货正走',
-    CarGmstatus.STATIONARY: '静止',
-    CarGmstatus.SPIN_IN_PLACE: '原地旋转',
-    CarGmstatus.DOCK_CHARGE: '去充电',
-    CarGmstatus.UNDOCK_LEAVE: '充电结束离开',
+    RobotMoveStateValue.UNKNOWN: '未知',
+    RobotMoveStateValue.MOVING_FORWARD: '正走',
+    RobotMoveStateValue.MOVING_BACKWARD: '倒走',
+    RobotMoveStateValue.MOVING_FORWARD_TO_PICK: '正走去取',
+    RobotMoveStateValue.MOVING_FORWARD_TO_PLACE: '正走去放',
+    RobotMoveStateValue.MOVING_DIR_UNKNOWN: '行走但方向未知',
+    RobotMoveStateValue.ROTATING: '原地旋转',
+    RobotMoveStateValue.STATIONARY: '静止',
+    RobotMoveStateValue.PAUSED: '任务暂停',
 }
 
 # 缺省周期：按接口文档的 100 ms。
@@ -56,7 +56,7 @@ def build_schedule(args):
         return [(args.value, float('inf'))]
     if args.mode == 'script':
         return load_script(args.file)
-    order = list(range(9))   # 9 个设计状态全排进周期
+    order = list(ALL_STATES)   # ooii: 九值 0–8 全排进周期
     return [(v, args.hold) for v in order]
 
 
@@ -84,48 +84,43 @@ def load_script(stream):
     return schedule
 
 
-# 设计状态各自的朝向：状态号 → dir（gen_zones 权威）。
-_DIR_OF = {
-    1: 1,   # 空载正走
-    2: -1,  # 空载倒走
-    3: 1,   # 正走抓料框（固定档，v 无意义但给正向以便轨迹可看）
-    4: -1,  # 搬货倒走
-    5: 1,   # 搬货正走
-    6: 0,   # 静止
-    7: 0,   # 原地旋转
-    8: 1,   # 去充电
-    9: -1,  # 充电结束离开
-}
-
-
 def mock_motion_for(value, args, elapsed):
-    """给出该枚举值下模拟的 (v_car, w_car, lift_height)。
+    """给出该状态值下模拟的 (v_car, w_car, lift_height)。
 
-    状态号 = value + 1。方向／载货已由设计状态决定，这里只按朝向给一个
-    合理的 v 符号、按形状给 w，让消费端的档位判据能走到，不代表整车动力学。
+    ooii: V0.2 九值自带方向（正走/倒走），这里按状态造对应的 v 符号；
+    --direction 只控制原地旋转的转向。进站（去取/去放）给慢速，
+    未知/暂停/静止不造速度，不代表整车动力学。
     """
-    state = OP_TO_STATE[value]
-    d = _DIR_OF[state]
-    if state == 7:          # 原地旋转：只转不走
+    if value == RobotMoveStateValue.ROTATING:
         return 0.0, args.mock_w * (1 if args.direction >= 0 else -1), 0.0
-    if d == 0:              # 静止
+    if value in (RobotMoveStateValue.UNKNOWN,
+                 RobotMoveStateValue.MOVING_DIR_UNKNOWN,
+                 RobotMoveStateValue.STATIONARY,
+                 RobotMoveStateValue.PAUSED):
         return 0.0, 0.0, 0.0
-    return (_DIR_OF[state] * args.mock_v), 0.0, 0.0
+    if value in (RobotMoveStateValue.MOVING_FORWARD_TO_PICK,
+                 RobotMoveStateValue.MOVING_FORWARD_TO_PLACE):
+        return args.mock_v * 0.3, 0.0, 0.0       # 进站：慢速前进
+    if value == RobotMoveStateValue.MOVING_BACKWARD:
+        return -args.mock_v, 0.0, 0.0
+    return args.mock_v, 0.0, 0.0                 # 正走
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--mode', choices=['cycle', 'hold', 'script'], default='cycle')
-    parser.add_argument('--value', type=int, default=CarGmstatus.SPIN_IN_PLACE,
-                        help='--mode hold 时固定发布的枚举值 0–8（设计状态号 − 1）')
+    parser.add_argument('--value', type=int,
+                        default=RobotMoveStateValue.STATIONARY,
+                        help='ooii: --mode hold 时固定发布的 robot_move_state 0–8'
+                             '（默认 7 静止）')
     parser.add_argument('--file', type=argparse.FileType('r', encoding='utf-8'),
                         help='--mode script 时的 CSV 路径')
     parser.add_argument('--hold', type=float, default=3.0,
                         help='--mode cycle 时每个枚举值的保持秒数')
     parser.add_argument('--period', type=float, default=DEFAULT_PERIOD,
                         help='发布周期，秒；接口文档为 0.1')
-    parser.add_argument('--topic', default='/car_op_status')
+    parser.add_argument('--topic', default='/robot_move_state')
     parser.add_argument('--mock-motion', action='store_true',
                         help='同时模拟发布 /motion_state，让消费端脱离整车可跑')
     parser.add_argument('--motion-topic', default='/motion_state')
@@ -134,7 +129,8 @@ def main(argv=None):
     parser.add_argument('--mock-w', type=float, default=1.0,
                         help='--mock-motion 下原地旋转发布的 |w_car|')
     parser.add_argument('--direction', type=int, choices=[1, -1], default=1,
-                        help='原地旋转时旋转方向（1 逆时针 / -1 顺时针）；正负由状态自带')
+                        help='ooii: 原地旋转的转向（1 逆时针 / -1 顺时针）；'
+                             '行走方向由九值状态本身决定')
     parser.add_argument('--no-repeat', action='store_true',
                         help='周期跑完一轮后退出，便于脚本化验证')
     parser.add_argument('--yield-to-other-publishers', action='store_true',
@@ -157,16 +153,18 @@ def main(argv=None):
     import rclpy
     from rclpy.node import Node
     from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
-    from std_msgs.msg import Int32
+
+    # ooii: 状态接口改为 RobotMoveState（Header + uint8 robot_move_state）。
+    from byd_custom_msgs.msg import RobotMoveState
 
     rclpy.init(args=None)
     node = Node('car_op_status_sim')
 
-    # 与项目内已有 /collision_state 发布习惯一致：BEST_EFFORT／VOLATILE／KeepLast(1)。
-    status_qos = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1,
-                            reliability=ReliabilityPolicy.BEST_EFFORT,
+    # ooii: V0.2 协议规定 QoS RELIABLE；与 car_op_zones 的订阅端一致。
+    status_qos = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=10,
+                            reliability=ReliabilityPolicy.RELIABLE,
                             durability=DurabilityPolicy.VOLATILE)
-    status_pub = node.create_publisher(Int32, args.topic, status_qos)
+    status_pub = node.create_publisher(RobotMoveState, args.topic, status_qos)
 
     motion_pub = None
     motion_cls = None
@@ -180,7 +178,7 @@ def main(argv=None):
         motion_pub = node.create_publisher(MotionState, args.motion_topic, motion_qos)
 
     state = {'index': 0, 'segment_start': time.monotonic(), 'cycles': 0,
-             'yielded': False}
+             'yielded': False, 'last_value': None, 'seq': 0}
     total = len(schedule)
 
     def publish():
@@ -214,9 +212,20 @@ def main(argv=None):
 
         if value not in NAME_OF:
             node.get_logger().warn(
-                f'枚举值 {value} 不在 CarGmstatus 定义内，仍照发（消费端会告警）')
+                f'robot_move_state={value} 不在 RobotMoveState 定义内（0–8），'
+                f'仍照发（消费端会告警）')
 
-        status_pub.publish(Int32(data=int(value)))
+        # ooii: change_seq 只在状态切换时 +1，周期重发保持不变。
+        if state['last_value'] is not None and value != state['last_value']:
+            state['seq'] = (state['seq'] + 1) & 0xFFFFFFFF
+        state['last_value'] = value
+
+        status_msg = RobotMoveState()
+        status_msg.header.stamp = node.get_clock().now().to_msg()
+        status_msg.header.frame_id = 'base_link'   # ooii: 状态无坐标含义，仅填车身系
+        status_msg.robot_move_state = int(value)
+        status_msg.change_seq = int(state['seq'])
+        status_pub.publish(status_msg)
 
         detail = ''
         if motion_pub is not None:
@@ -233,7 +242,8 @@ def main(argv=None):
             detail = f'  motion: v={v:+.2f} w={w:+.2f} lift={lift:.2f}'
 
         node.get_logger().info(
-            f'{args.topic} <- {value} ({NAME_OF.get(value, "未定义")})'
+            f'{args.topic} <- {value} ({NAME_OF.get(value, "未定义")}) '
+            f'seq={state["seq"]}'
             f'  第{state["cycles"] + 1}轮 段{state["index"] + 1}/{total}{detail}',
             throttle_duration_sec=0.0)
 

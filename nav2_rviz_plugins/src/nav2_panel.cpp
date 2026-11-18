@@ -379,8 +379,6 @@ Nav2Panel::Nav2Panel(QWidget * parent)
 
 Nav2Panel::~Nav2Panel()
 {
-  // Stop the status poll timer before the action clients and client node are destroyed.
-  timer_.stop();
 }
 
 void
@@ -659,12 +657,6 @@ Nav2Panel::timerEvent(QTimerEvent * event)
       }
 
       rclcpp::spin_some(client_node_);
-      // spin_some can run the result callback that resets the handle.
-      if (!waypoint_follower_goal_handle_) {
-        timer_.stop();
-        state_machine_.postEvent(new ROSActionQEvent(QActionState::INACTIVE));
-        return;
-      }
       auto status = waypoint_follower_goal_handle_->get_status();
 
       // Check if the goal is still executing
@@ -686,12 +678,6 @@ Nav2Panel::timerEvent(QTimerEvent * event)
       }
 
       rclcpp::spin_some(client_node_);
-      // spin_some can run the result callback that resets the handle.
-      if (!nav_through_poses_goal_handle_) {
-        timer_.stop();
-        state_machine_.postEvent(new ROSActionQEvent(QActionState::INACTIVE));
-        return;
-      }
       auto status = nav_through_poses_goal_handle_->get_status();
 
       // Check if the goal is still executing
@@ -713,12 +699,6 @@ Nav2Panel::timerEvent(QTimerEvent * event)
       }
 
       rclcpp::spin_some(client_node_);
-      // spin_some can run the result callback that resets the handle.
-      if (!navigation_goal_handle_) {
-        timer_.stop();
-        state_machine_.postEvent(new ROSActionQEvent(QActionState::INACTIVE));
-        return;
-      }
       auto status = navigation_goal_handle_->get_status();
 
       // Check if the goal is still executing

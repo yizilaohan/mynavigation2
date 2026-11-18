@@ -32,9 +32,7 @@ inline double fixedAngle(const double value)
 }
 
 // 原始姿态编码车头方向；重复位置不能简单删除，否则会丢失原地旋转。
-// rotation_distance 是判为“原地旋转”的最大相邻间距：默认 1e-6 保持原有行为，
-// 状态格路径在 5 cm 网格上可能只留下几毫米位移，由调用方传更大的容差。
-inline std::vector<FixedSegment> splitFixedPath(const nav_msgs::msg::Path & path, const double rotation_distance = 1e-6)
+inline std::vector<FixedSegment> splitFixedPath(const nav_msgs::msg::Path & path)
 {
   if (path.header.frame_id.empty() || path.poses.empty())
   {
@@ -56,8 +54,8 @@ inline std::vector<FixedSegment> splitFixedPath(const nav_msgs::msg::Path & path
     const auto & a = path.poses[i];
     const auto & b = path.poses[i + 1];
     const double distance = fixedDistance(a, b);
-    const bool rotation = distance <= rotation_distance && std::abs(fixedAngle(tf2::getYaw(b.pose.orientation) - tf2::getYaw(a.pose.orientation))) > 1e-4;
-    if (distance <= rotation_distance && !rotation)
+    const bool rotation = distance <= 1e-6 && std::abs(fixedAngle(tf2::getYaw(b.pose.orientation) - tf2::getYaw(a.pose.orientation))) > 1e-4;
+    if (distance <= 1e-6 && !rotation)
     {
       continue;
     }
@@ -76,10 +74,7 @@ inline std::vector<FixedSegment> splitFixedPath(const nav_msgs::msg::Path & path
       }
       direction = cosine > 0.0 ? 1 : -1;
     }
-    // 连续原地旋转必须合并为同一执行段：状态格旋转由多个单航向基元组成，
-    // 若逐基元成段，每转一格都要经历停车、停稳复核与重新下发 FollowPath。
-    if (!segments.empty() && segments.back().rotation == rotation &&
-      (rotation || segments.back().direction == direction))
+    if (!segments.empty() && !rotation && !segments.back().rotation && segments.back().direction == direction)
     {
       segments.back().last = i + 1;
     }

@@ -48,9 +48,6 @@ private:
   std::unique_ptr<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>> collision_;
   rclcpp_lifecycle::LifecycleNode::SharedPtr node_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_pub_;
-  // 默认 1e-6 / 0.0 与历史行为一致；状态格模式由 Launch 传入更大的旋转判据与位置验收半径。
-  double rotation_distance_ = 1e-6;
-  double rotation_position_tolerance_ = 0.0;
   rclcpp::SubscriptionBase::SharedPtr odom_sub_;
   nav_msgs::msg::Odometry odom_;
   std::chrono::steady_clock::time_point odom_received_;

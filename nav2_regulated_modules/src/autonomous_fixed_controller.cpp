@@ -62,10 +62,6 @@ void AutonomousFixedPathController::configure(const rclcpp_lifecycle::LifecycleN
   resume_stable_duration_ = parameter("resume_stable_duration", 0.15);
   resume_distance_ = parameter("resume_distance", 0.2);
   resume_linear_acceleration_ = parameter("resume_linear_acceleration", 0.5);
-  nav2_util::declare_parameter_if_not_declared(node_, name + ".rotation_distance", rclcpp::ParameterValue(1e-6));
-  rotation_distance_ = node_->get_parameter(name + ".rotation_distance").as_double();
-  nav2_util::declare_parameter_if_not_declared(node_, name + ".rotation_position_tolerance", rclcpp::ParameterValue(0.0));
-  rotation_position_tolerance_ = node_->get_parameter(name + ".rotation_position_tolerance").as_double();
   if (resume_stable_duration_ >= short_pause_timeout_)
   {
     throw std::invalid_argument("Autonomous fixed resume stability must fit inside the short pause window");
@@ -137,7 +133,7 @@ void AutonomousFixedPathController::cleanup()
 void AutonomousFixedPathController::setPlan(const nav_msgs::msg::Path & path)
 {
   std::lock_guard<std::mutex> lock(mutex_);
-  const auto segments = detail::splitFixedPath(path, rotation_distance_);
+  const auto segments = detail::splitFixedPath(path);
   if (segments.size() != 1)
   {
     throw nav2_core::PlannerException("Autonomous fixed controller requires one direction segment");
@@ -599,7 +595,6 @@ geometry_msgs::msg::TwistStamped AutonomousFixedPathController::computeVelocityC
   const double xy = detail::fixedDistance(robot, path_.poses.back());
   const double yaw = detail::fixedAngle(tf2::getYaw(path_.poses.back().pose.orientation) - tf2::getYaw(robot.pose.orientation));
   const double yaw_tolerance = tf2::getYaw(tolerance.orientation);
-  const double position_tolerance = (rotation_only_ && rotation_position_tolerance_ > 0.0) ? std::max(tolerance.position.x, rotation_position_tolerance_) : tolerance.position.x;
   const bool stationary = std::hypot(measured.linear.x, measured.linear.y) <= stopped.linear.x && std::abs(measured.angular.z) <= stopped.angular.z;
   detail::FixedSegment segments;
   segments.last = path_.poses.size() - 1;
@@ -615,7 +610,7 @@ geometry_msgs::msg::TwistStamped AutonomousFixedPathController::computeVelocityC
     command.twist = geometry_msgs::msg::Twist();
     if (trim_.active)
     {
-      if (xy > position_tolerance + terminal_capture_margin_ || !trimPoseAllowed(robot.pose.position.x, robot.pose.position.y) || !detail::fixedTrimWithinBudget(trim_, trim_limits_, steady_time))
+      if (xy > tolerance.position.x + terminal_capture_margin_ || !trimPoseAllowed(robot.pose.position.x, robot.pose.position.y) || !detail::fixedTrimWithinBudget(trim_, trim_limits_, steady_time))
       {
         status("FAILED");
         throw nav2_core::PlannerException("Autonomous fixed trim capture, corridor, distance or time budget exceeded");
@@ -626,12 +621,12 @@ geometry_msgs::msg::TwistStamped AutonomousFixedPathController::computeVelocityC
       }
       if (!blocked_ && !trim_paused_)
       {
-        command.twist = trimCommand(robot, measured, position_tolerance);
+        command.twist = trimCommand(robot, measured, tolerance.position.x);
       }
     }
     else
     {
-      detail::reviewFixedTerminal(terminal_review_, xy, yaw, stationary, time, position_tolerance, yaw_tolerance, brake_stable_duration_, settle_duration_, terminal_review_timeout_, terminal_capture_margin_);
+      detail::reviewFixedTerminal(terminal_review_, xy, yaw, stationary, time, tolerance.position.x, yaw_tolerance, brake_stable_duration_, settle_duration_, terminal_review_timeout_, terminal_capture_margin_);
       if (terminal_review_.phase == detail::FixedReviewPhase::WAIT_POSITION && !rotation_only_ && !blocked_)
       {
         if (!trim_confirm_stamp_)
@@ -649,7 +644,7 @@ geometry_msgs::msg::TwistStamped AutonomousFixedPathController::computeVelocityC
           terminal_review_.reset();
           trim_paused_ = false;
           trim_resume_since_.reset();
-          command.twist = trimCommand(robot, measured, position_tolerance);
+          command.twist = trimCommand(robot, measured, tolerance.position.x);
         }
       }
       else
@@ -658,7 +653,7 @@ geometry_msgs::msg::TwistStamped AutonomousFixedPathController::computeVelocityC
       }
     }
     const auto phase = terminal_review_.phase;
-    logTerminalReview(robot, measured, xy, yaw, position_tolerance, stationary, tf_stamp, tf_age, odom_age, receive_age);
+    logTerminalReview(robot, measured, xy, yaw, tolerance.position.x, stationary, tf_stamp, tf_age, odom_age, receive_age);
     if (terminal_review_.failed())
     {
       status("FAILED");

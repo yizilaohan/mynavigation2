@@ -1,50 +1,55 @@
-# /car_op_status 模拟与按状态切换碰撞框
+# /robot_move_state 模拟与按状态切换碰撞框
 
-用两个工具把「行为解析模块发状态」和「边界随状态变」跑通，全部只读现有设计，
+用两个工具把「Manager 发移动状态」和「边界随状态变」跑通，全部只读现有设计，
 不改 `nav2_collision_monitor` 源码。生产 `myworld2.yaml` 的三角色已切为订阅
 `car_op_zones/stop|slow_l2|slow_l1` 动态框（见 `production-statebox-wiring.md`），
 本工具是那个动态框的发布端。
 
 | 工具 | 角色 |
 |---|---|
-| [car_op_status_sim.py](car_op_status_sim.py) | 顶替行为解析模块，按接口文档周期发 `/car_op_status` |
+| [car_op_status_sim.py](car_op_status_sim.py) | 顶替 Manager，按 V0.2 协议周期发 `/robot_move_state` |
 | [car_op_zones.py](car_op_zones.py) | 订阅状态，算出三级边界，发 `PolygonStamped` |
 
 边界数值一个都不在这两个脚本里：全部 `import` [doc/collision_zones/gen_zones.py](../../doc/collision_zones/gen_zones.py)，
 取它的 `STATES[*]["layers"]`。设计改了，工具跟着改。
 
-## 接口契约（按文档）
+## 接口契约（V0.2 定稿）
 
 | 项 | 值 |
 |---|---|
-| 话题 | `/car_op_status` |
-| 类型 | `std_msgs/msg/Int32` |
-| 发布者 | 行为解析模块（本工具在演示时代替它） |
-| 订阅者 | 调度模块 |
+| 话题 | `/robot_move_state`（可用 launch 的 `car_op_status_topic` 覆盖） |
+| 类型 | `byd_custom_msgs/msg/RobotMoveState`（ooii: 2026-11 由 `std_msgs/msg/Int32` 迁移） |
+| 发布者 | Manager / 行为解析模块（本工具在演示时代替它） |
+| 订阅者 | 底盘避障节点（`car_op_zones`） |
+| QoS | RELIABLE（发布端与订阅端一致） |
 | 周期 | 100 ms |
 
 `car_op_status_sim.py --period` 默认 `0.1`，即文档的 100 ms。
+消息字段：`Header header`、`uint8 robot_move_state`（九值 0–8）、
+`uint32 change_seq`（状态切换才 +1，周期重发不变）。
 
 ## 状态映射
 
-`CarGmstatus` 枚举即是 9 个设计状态，一一对应、差 1：枚举值 0–8 ↔ 设计状态号 1–9。
-空载/载货、正走/倒走已内建在每个设计状态里，不再需要额外补轴。
+ooii: V0.2 九值映射到原有 9 个设计状态。设计层 `gen_zones.py` 未改动，
+只改消费端映射（见 `car_op_zones.py` 的 `MOVE_STATE_*` 常量）：
 
-| 枚举值 | 设计状态 | key | 形状/轴 |
+| robot_move_state | 设计状态 | key | 形状/轴 |
 |---:|---|---|---|
-| 0 | 1 空载正走 | idle_forward | rect / v |
-| 1 | 2 空载倒走 | idle_backward | rect / v |
-| 2 | 3 正走抓料框 | grab_approach | rect / 固定 |
-| 3 | 4 搬货倒走 | cargo_backward | rect / v |
-| 4 | 5 搬货正走 | cargo_forward | rect / v |
-| 5 | 6 静止 | stationary | circle / 固定 |
-| 6 | 7 原地旋转 | spin_in_place | circle / w |
-| 7 | 8 去充电 | dock_charge | rect / v（屏蔽前方） |
-| 8 | 9 充电结束离开 | undock_leave | rect / v（屏蔽后方） |
+| 0 未知 | 1 空载正走 | idle_forward | rect / v（ooii: 2026-11-17 起按原协议默认态处理） |
+| 1 正走 | 1 空载正走 | idle_forward | rect / v |
+| 2 倒走 | 2 空载倒走 | idle_backward | rect / v |
+| 3 正走去取 | 3 正走抓料框 | grab_approach | rect / 固定 |
+| 4 正走去放 | 5 搬货正走 | cargo_forward | rect / v（载货） |
+| 5 行走但方向未知 | 6 静止 | stationary | circle / 固定 |
+| 6 原地旋转 | 7 原地旋转 | spin_in_place | circle / w |
+| 7 静止 | 6 静止 | stationary | circle / 固定 |
+| 8 任务暂停 | 6 静止 | stationary | circle / 固定 |
 
-枚举值 `v` 的 Int32 载荷即线上值；消费端 `状态号 = 枚举值 + 1`。
-`/motion_state` 里的 `v_car`／`w_car` 仍用于在该状态的档位里选档（按 `|v|` 或 `|w|`），
-但不再用来推「方向」「载货」——那两个轴已经由状态本身决定。
+V0.2 裁撤了负载维：只有 4（正走去放）隐含载货，按货框外缘量净空；
+其余行走态按空载几何处理。5（方向未知）没有单向包络，落到静止的全向圆框，
+比任一单向框都保守；8（暂停）按静止包络处理。
+
+`/motion_state` 里的 `v_car`／`w_car` 仍用于在该状态的档位里选档（按 `|v|` 或 `|w|`）。
 
 ## 档位
 
@@ -54,14 +59,14 @@
 
 实车要**自动换状态/换档**，必须同时有两个输入：
 
-- `/car_op_status`（Int32，100 ms）由行为解析模块发布；没有外部发布者时，
-  launch 里的 `car_op_status_sim` 固定发 0（状态1 空载正走）。
+- `/robot_move_state`（`RobotMoveState`，RELIABLE，100 ms）由 Manager 发布；
+  没有外部发布者时，launch 里的 `car_op_status_sim` 固定发 7（静止）。
 - `/motion_state`（`byd_custom_msgs/MotionState`）由运控/底盘发布，`v_car`/`w_car`
   决定档位；`car_op_zones` 以 BEST_EFFORT（SensorDataQoS）订阅，兼容运控的
   BEST_EFFORT 与仿真的 RELIABLE 发布端。没有它时 `v=w=0`，永远第 0 档。
 
-两个输入都缺时，框会一直停在「状态1 / 第0档」，启动日志会提示未收到
-`/motion_state`。验证：`ros2 topic info /car_op_status -v`、
+两个输入都缺时，框会一直停在 launch 默认状态（7 静止 / 第0档），启动日志会提示未收到
+`/motion_state`。验证：`ros2 topic info /robot_move_state -v`、
 `ros2 topic echo /motion_state --once`。
 
 ## 跑起来
@@ -101,16 +106,18 @@ ros2 run nav2_collision_monitor car_op_status_sim.py --mode cycle --hold 3.0 --m
 launch 已固定：`myworld_bringup/entry.launch.py` 传 `--profile sim`，
 `regulated_modules.launch.py` 传 `--profile real`。
 
-只想看一个状态（`--value` 取枚举值 0–8）：
-- `--value 0` = 状态1 空载正走
-- `--value 6` = 状态7 原地旋转
-- `--value 7` = 状态8 去充电（屏蔽前方）
+只想看一个状态（`--value` 取 `robot_move_state` 0–8）：
+- `--value 1` = 正走
+- `--value 2` = 倒走
+- `--value 6` = 原地旋转
+- `--value 7` = 静止（launch 默认）
 
 ```bash
-ros2 run nav2_collision_monitor car_op_status_sim.py --mode hold --value 6 --mock-motion --mock-w 1.2
+ros2 run nav2_collision_monitor car_op_status_sim.py --mode hold --value 6 \
+  --mock-motion --mock-w 1.2
 ```
 
-跑固定序列（CSV：`枚举值,保持秒数`，取值 0–8）：
+跑固定序列（CSV：`robot_move_state,保持秒数`，取值 0–8）：
 
 ```bash
 printf '0,2\n3,2\n6,3\n7,3\n' > /tmp/sched.csv
@@ -243,7 +250,7 @@ ros2 launch nav2_collision_monitor obstacle_status.launch.py \
   或给 CM 改 `polygon_pub_topic`。
 - 模块**只发状态、不改速度**：翻译器固定带 `--no-passthrough`，不发布 `/cmd_vel`，
   减速/停车由运控按 `/obstacle_status_int` 执行。
-- 默认状态源同样带 `--yield-to-other-publishers`；现场有自己的 `/car_op_status` 时会自动让位。
+- 默认状态源同样带 `--yield-to-other-publishers`；现场有自己的 `/robot_move_state` 时会自动让位。
   没有状态源时传 `use_car_op_status_sim:=false`。
 - 前置条件：`base_link→<scan frame>` 静态 TF 必须存在，否则翻译器一直发 0（ERROR）。
 
@@ -265,11 +272,11 @@ ros2 launch myworld_bringup entry.launch.py \
 （默认 false），确有需要时才开。
 
 `car_op_zones` 必须有状态源才会发框。launch 默认起一个持有
-`car_op_status_value`（默认 0，空载正走）的 `car_op_status_sim`，所以启动后就有
-状态 0 的边界框。这个默认源带 `--yield-to-other-publishers`：
+`car_op_status_value`（ooii: 默认 11，空载静止）的 `car_op_status_sim`，所以启动后就有
+状态 7 的边界框。这个默认源带 `--yield-to-other-publishers`：
 
-- 窗口 4 再起状态源时，它检测到 `/car_op_status` 有第二个发布者，自动暂停；
-- 窗口 4 退出后，它恢复发布状态 0。
+- 窗口 4 再起状态源时，它检测到 `/robot_move_state` 有第二个发布者，自动暂停；
+- 窗口 4 退出后，它恢复发布默认状态 7（静止）。
 
 所以“默认框 → 命令切换成别的状态框”仍是同一个状态话题在换值，不会两套框打架：
 

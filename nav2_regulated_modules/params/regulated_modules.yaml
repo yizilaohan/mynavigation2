@@ -146,13 +146,11 @@ planner_server:
       # 解析扩展最大长度，单位米。
       analytic_expansion_max_length: 3.0
       # 倒车轨迹代价系数。
-      reverse_penalty: 1.5
+      reverse_penalty: 2.0
       # 切换行进方向的代价。
       change_penalty: 0.05
-      # 前进↔倒车换向的倍率惩罚，1.0 表示不惩罚。
-      direction_change_penalty: 3.0
       # 非直线运动代价系数。
-      non_straight_penalty: 1.3
+      non_straight_penalty: 1.05
       # 障碍代价权重。
       cost_penalty: 2.0
       # 原地旋转代价。
@@ -1069,13 +1067,15 @@ local_costmap:
         # 体素 z 方向分辨率，单位米。
         z_resolution: 0.05
         # 体素 z 方向格数。
-        z_voxels: 16
+        # ooii: 16*0.05=0.8m 会把 3D 雷达高点裁掉，改为 40（覆盖到 2.0m）
+        z_voxels: 40
         # 可标记障碍的最高高度，单位米。
         max_obstacle_height: 2.0
         # 体素列标记为障碍的阈值。
         mark_threshold: 0
         # 碰撞监控或代价地图使用的传感器名称。
-        observation_sources: scan
+        # ooii: 增加 3D 雷达点云源，2D scan 保留给实车
+        observation_sources: scan lidar3d
         # 激光扫描数据源实例。
         scan:
           # 该数据源订阅的话题。
@@ -1096,6 +1096,20 @@ local_costmap:
           obstacle_max_range: 2.5
           # 障碍标记最小距离，单位米。
           obstacle_min_range: 0.0
+        # ooii: 3D 雷达源：离线转包 /lidar_front/points_map，点已在 map 坐标系；
+        # ooii: 必须显式 sensor_frame，否则射线原点会落到 map 原点，导致误清图。
+        lidar3d:
+          topic: /lidar_front/points_map
+          data_type: "PointCloud2"
+          sensor_frame: base_link
+          min_obstacle_height: 0.10
+          max_obstacle_height: 2.0
+          marking: true
+          clearing: true
+          obstacle_max_range: 6.0
+          obstacle_min_range: 0.0
+          raytrace_max_range: 7.0
+          raytrace_min_range: 0.0
       # 障碍膨胀层；依据膨胀半径生成周边代价。
       inflation_layer:
         # 该实例加载的插件类名。
@@ -1146,7 +1160,8 @@ global_costmap:
         # 是否使用机器人轮廓清除障碍。
         footprint_clearing_enabled: true
         # 碰撞监控或代价地图使用的传感器名称。
-        observation_sources: scan
+        # ooii: 增加 3D 雷达点云源，2D scan 保留给实车
+        observation_sources: scan lidar3d
         # 激光扫描数据源实例。
         scan:
           # 该数据源订阅的话题。
@@ -1167,6 +1182,19 @@ global_costmap:
           obstacle_max_range: 2.5
           # 障碍标记最小距离，单位米。
           obstacle_min_range: 0.0
+        # ooii: 3D 雷达源：同上，sensor_frame 必须显式指定。
+        lidar3d:
+          topic: /lidar_front/points_map
+          data_type: "PointCloud2"
+          sensor_frame: base_link
+          min_obstacle_height: 0.10
+          max_obstacle_height: 2.5
+          marking: true
+          clearing: true
+          obstacle_max_range: 10.0
+          obstacle_min_range: 0.0
+          raytrace_max_range: 12.0
+          raytrace_min_range: 0.0
       # 障碍膨胀层；依据膨胀半径生成周边代价。
       inflation_layer:
         # 该实例加载的插件类名。

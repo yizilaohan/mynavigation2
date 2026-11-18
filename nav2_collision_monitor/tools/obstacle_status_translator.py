@@ -31,7 +31,7 @@
      坐标系（默认 base_link）；投影后先丢掉落在车体矩形内的点（雷达扫到的
      自身车体/支架/另一颗雷达，由 --profile 与 --body-margin 控制）；
   2. 订阅 `car_op_zones/{stop,slow_l2,slow_l1}`（TRANSIENT_LOCAL，由
-     car_op_zones.py --drive-monitor 按 /car_op_status + /motion_state 动态生成）；
+     car_op_zones.py --drive-monitor 按 /robot_move_state + /motion_state 动态生成）；
   3. 对三级多边形做点在多边形内判断，按 L3 > L2 > L1 优先级翻译成枚举；
   4. 按当前枚举选择发布周期（STOP 80 Hz / SLOWDOWN 40 Hz / 其余 25 Hz），
      状态变化时立即补发一帧；

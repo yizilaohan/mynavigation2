@@ -38,8 +38,6 @@ struct SearchInfo
   float non_straight_penalty;
   float change_penalty;
   float reverse_penalty;
-  // 前进与倒车互相切换时的代价倍率；1.0 表示不额外惩罚（上游原行为）。
-  float direction_change_penalty = 1.0f;
   float cost_penalty;
   float retrospective_penalty;
   float rotation_penalty;

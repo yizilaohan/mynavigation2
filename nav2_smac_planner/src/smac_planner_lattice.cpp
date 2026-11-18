@@ -99,10 +99,6 @@ void SmacPlannerLattice::configure(
     node, name + ".change_penalty", rclcpp::ParameterValue(0.05));
   node->get_parameter(name + ".change_penalty", _search_info.change_penalty);
   nav2_util::declare_parameter_if_not_declared(
-    node, name + ".direction_change_penalty", rclcpp::ParameterValue(1.0));
-  node->get_parameter(
-    name + ".direction_change_penalty", _search_info.direction_change_penalty);
-  nav2_util::declare_parameter_if_not_declared(
     node, name + ".non_straight_penalty", rclcpp::ParameterValue(1.05));
   node->get_parameter(name + ".non_straight_penalty", _search_info.non_straight_penalty);
   nav2_util::declare_parameter_if_not_declared(
@@ -427,9 +423,6 @@ SmacPlannerLattice::dynamicParametersCallback(std::vector<rclcpp::Parameter> par
       } else if (name == _name + ".change_penalty") {
         reinit_a_star = true;
         _search_info.change_penalty = static_cast<float>(parameter.as_double());
-      } else if (name == _name + ".direction_change_penalty") {
-        reinit_a_star = true;
-        _search_info.direction_change_penalty = static_cast<float>(parameter.as_double());
       } else if (name == _name + ".non_straight_penalty") {
         reinit_a_star = true;
         _search_info.non_straight_penalty = static_cast<float>(parameter.as_double());

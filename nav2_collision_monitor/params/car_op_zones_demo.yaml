@@ -1,4 +1,4 @@
-# 演示专用：让 collision_monitor 的三级边界由 /car_op_status 驱动。
+# 演示专用：让 collision_monitor 的三级边界由 /robot_move_state 驱动。
 #
 # 这是**独立的小配置**，只给 collision_monitor 一个节点用，不并入 regulated_modules.yaml。
 # 生产 YAML 一个字都没改。

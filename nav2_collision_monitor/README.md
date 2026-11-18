@@ -26,7 +26,7 @@
 
 本包依据传感器过滤速度，与外部 `/collision_state` UInt8 门控独立。`regulated_modules.launch.py`、`myworld_bringup/entry.launch.py` 和 [launch/obstacle_status.launch.py](launch/obstacle_status.launch.py) 现在是同一套语义：`use_collision_monitor` 是碰撞检测模块（状态枚举链）总开关，Nav2 速度门由独立的 `use_collision_velocity_gate` 控制，两者均默认 false，需显式启用。区域可视化不会产生碰撞判断。碰撞区默认使用 `velocity_polygon`（按速度档切换），自研 box / 动态订阅框仍保留为 `type: "polygon"`。
 
-避障状态链（`car_op_zones.py`、`obstacle_status_translator.py`、`car_op_status_sim.py`）自 2026-10 起也放在本包，默认行为是只发布 `/collision_state` 与 `/obstacle_status_int`，不发布 `/cmd_vel`。`use_obstacle_status`（默认 true）只控制 translator 是否输出枚举。实车既可以跑 `regulated_modules.launch.py`，也可以单独跑 [launch/obstacle_status.launch.py](launch/obstacle_status.launch.py) ，但不要同时开。说明见 [doc/OBSTACLE_STATUS.md](doc/OBSTACLE_STATUS.md) 。
+避障状态链（`car_op_zones.py`、`obstacle_status_translator.py`、`car_op_status_sim.py`）自 2026-10 起也放在本包，默认行为是只发布 `/collision_state` 与 `/obstacle_status_int`，不发布 `/cmd_vel`。ooii: 2026-11 起状态输入由 `/car_op_status`（`std_msgs/Int32`）换成 `/robot_move_state`（`byd_custom_msgs/RobotMoveState`，`uint8 robot_move_state` 九值 0–8，QoS RELIABLE），话题名可用 launch 参数 `car_op_status_topic` 覆盖；九值到设计状态的映射见 [doc/OBSTACLE_STATUS.md](doc/OBSTACLE_STATUS.md)。`use_obstacle_status`（默认 true）只控制 translator 是否输出枚举。实车既可以跑 `regulated_modules.launch.py`，也可以单独跑 [launch/obstacle_status.launch.py](launch/obstacle_status.launch.py) ，但不要同时开。说明见 [doc/OBSTACLE_STATUS.md](doc/OBSTACLE_STATUS.md) 。
 
 构建命令统一从 `nav2_ws` 执行，详见[仓库构建与包索引](../README.md) ；不在包源码目录运行 colcon。本文依据当前源码描述职责，包存在、可构建或包含测试文件均不代表完成运行验收。
 
@@ -121,4 +121,4 @@ Collision Monitor 是 Nav2 的速度安全监控节点。它订阅 LaserScan、P
 
         ros2 bag record -o ~/bags/obstacle_real \
   --qos-profile-overrides /tf_static:transient_local \
-  /c200_lidar_node/scan /tf /tf_static /car_op_status /motion_state /cmd_vel /odometry
+  /c200_lidar_node/scan /tf /tf_static /robot_move_state /motion_state /cmd_vel /odometry

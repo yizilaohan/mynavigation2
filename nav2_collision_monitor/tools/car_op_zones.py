@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""把 /car_op_status 翻译成设计文档里的三级碰撞边界，并发布为 PolygonStamped。
+"""把 /robot_move_state（byd_custom_msgs/RobotMoveState）翻译成设计文档里的三级碰撞边界，并发布为 PolygonStamped。
 
 数字一个都不在本文件里重抄：全部 import doc/collision_zones/gen_zones.py，
 取它的 STATES[*]["layers"] 与 shape_pts()。design 改了，本工具跟着改，不会各写一份。
@@ -14,10 +14,22 @@
     · 真实防护（--drive-monitor）：car_op_zones/{stop,slow_l2,slow_l1}，
       配合 params/car_op_zones_demo.yaml 里 type: "polygon" + polygon_sub_topic 使用。
 
-两个已知的接口缺口（详见 doc/OBSTACLE_STATUS.md）：
-    · 枚举不带方向位，NAV 的正走／倒走只能靠 /motion_state 的 v_car 符号推
-    · 枚举不载货位，空载／载货只能靠 lift_height 推
-枚举之外的 8 去充电／9 充电结束离开照收，但每次都告警。
+ooii: 2026-11 接口从 std_msgs/Int32（CarGmstatus 0–7）换成
+byd_custom_msgs/RobotMoveState（uint8 robot_move_state，九值 0–8，V0.2 定稿）。
+设计层 gen_zones.py 的 9 个状态不动，这里只做九值 → 9 状态的映射：
+
+    0 未知                  -> 6 静止（保守兜底）
+    1 正走                  -> 1 空载正走
+    2 倒走                  -> 2 空载倒走
+    3 正走去取              -> 3 正走抓料框（固定档）
+    4 正走去放              -> 5 搬货正走（去放默认载货）
+    5 行走但方向未知        -> 6 静止（全向圆框，比单向框保守）
+    6 原地旋转              -> 7 原地旋转
+    7 静止                  -> 6 静止
+    8 任务暂停              -> 6 静止（停车等待时按静止包络）
+
+新协议裁撤了负载维：只有“正走去放”隐含载货，其它行走态按空载几何处理。
+详见 doc/OBSTACLE_STATUS.md 的映射表。
 """
 import argparse
 import math
@@ -63,10 +75,35 @@ def load_gen_zones(zones_dir):
     return module
 
 
-# 接口枚举值 → 设计文档状态号。枚举 0–8 ↔ 设计状态 1–9，一一对应、差 1。
-OP_TO_STATE = {v: v + 1 for v in range(9)}
-OP_TO_NAME = {0: '空载正走', 1: '空载倒走', 2: '正走抓料框', 3: '搬货倒走',
-              4: '搬货正走', 5: '静止', 6: '原地旋转', 7: '去充电', 8: '充电结束离开'}
+# ooii: RobotMoveState V0.2 的九值（与 msg 里常量一一对应）。
+MOVE_STATE_NAME = {
+    0: '未知',
+    1: '正走',
+    2: '倒走',
+    3: '正走去取',
+    4: '正走去放',
+    5: '行走但方向未知',
+    6: '原地旋转',
+    7: '静止',
+    8: '任务暂停',
+}
+
+# ooii: 九值 → 设计状态号（设计层 9 状态不动）。
+# 5（方向未知）没有单向包络可用，落到静止的全向圆框，比任一单向框都保守。
+MOVE_STATE_TO_STATE = {
+    0: 6,   # 未知 -> 静止
+    1: 1,   # 正走 -> 空载正走
+    2: 2,   # 倒走 -> 空载倒走
+    3: 3,   # 正走去取 -> 正走抓料框（固定档）
+    4: 5,   # 正走去放 -> 搬货正走（载货）
+    5: 6,   # 方向未知 -> 静止（全向圆框）
+    6: 7,   # 原地旋转 -> 原地旋转
+    7: 6,   # 静止 -> 静止
+    8: 6,   # 任务暂停 -> 静止
+}
+
+# ooii: 新协议裁撤负载维，只有“正走去放”隐含载货。
+MOVE_STATE_LOADED = {4}
 
 # 设计状态号 → 分档轴。'v' 按 |v_car|，'w' 按 |w_car|，'fixed' 单档。
 STATE_AXIS = {1: 'v', 2: 'v', 3: 'fixed', 4: 'v', 5: 'v', 6: 'fixed', 7: 'w', 8: 'v', 9: 'v'}
@@ -75,27 +112,28 @@ LV_KEYS = ('L3 停止', 'L2 减速', 'L1 预警')
 
 
 class Resolver:
-    """把 (枚举值, v_car, w_car) 解析成设计状态号与档位号。
+    """把 (robot_move_state, v_car, w_car) 解析成设计状态号与档位号。
 
-    枚举值 0–8 ↔ 设计状态 1–9，一一对应。空载/载货、正走/倒走已内建在设计
-    状态里，不需要再从 v_car／lift_height 推导方向或载货。
-    档位号按该状态的 axis 由 |v_car| 或 |w_car| 选出。
+    ooii: V0.2 九值已带方向（正走/倒走/去取/去放），不再用 v_car 推方向；
+    v_car／w_car 只用于在设计状态的档位里选档。
     """
 
-    def __init__(self, zones, stop_speed=0.02):
+    def __init__(self, zones):
         self.z = zones
-        self.stop_speed = stop_speed
 
-    def resolve(self, op, v_car, lift_height):
+    def resolve(self, move_state, v_car, lift_height):
         """返回 (状态号, 是否载货, 说明字符串列表)。"""
         notes = []
-        state = OP_TO_STATE.get(op)
+        state = MOVE_STATE_TO_STATE.get(move_state)
         if state is None:
-            notes.append(f'枚举值 {op} 未定义，按静止（状态6）处理')
+            notes.append(
+                f'robot_move_state={move_state} 未定义（九值 0–8），'
+                f'按静止（状态6）处理')
             return 6, False, notes
 
-        # 载货与否由设计状态本身决定（搬货走 = cargo，空载走 / 静止 / 旋转 = 空载）。
-        cargo = self.z.STATES[state - 1].get('cargo') is not None
+        # 载货：只有“正走去放”隐含载货；设计状态自带 cargo 的（4/5）同样置真。
+        cargo = (move_state in MOVE_STATE_LOADED
+                 or self.z.STATES[state - 1].get('cargo') is not None)
         return state, cargo, notes
 
     def tier(self, state, v_car, w_car, cargo=False):
@@ -420,9 +458,9 @@ def run(args):
     from rclpy.node import Node
     from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
                            ReliabilityPolicy, qos_profile_sensor_data)
-    from std_msgs.msg import Int32
 
-    from byd_custom_msgs.msg import MotionState
+    # ooii: 状态接口改为 RobotMoveState（uint8 robot_move_state）。
+    from byd_custom_msgs.msg import MotionState, RobotMoveState
     from geometry_msgs.msg import PolygonStamped
 
     rclpy.init(args=None)
@@ -434,9 +472,10 @@ def run(args):
     poly_qos = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1,
                           reliability=ReliabilityPolicy.RELIABLE,
                           durability=DurabilityPolicy.TRANSIENT_LOCAL)
-    # 输入侧与发布端对齐：/car_op_status 是 BEST_EFFORT。
-    op_qos = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1,
-                        reliability=ReliabilityPolicy.BEST_EFFORT,
+    # ooii: V0.2 协议规定发布端 QoS RELIABLE，订阅端随之为 RELIABLE；
+    # depth 10 给状态切换边沿留余量（发布端 10 Hz，重发同一值）。
+    op_qos = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=10,
+                        reliability=ReliabilityPolicy.RELIABLE,
                         durability=DurabilityPolicy.VOLATILE)
 
     viz_topics = ['collision_stop_zone', 'collision_slowdown_zone', 'collision_slowdown_l1']
@@ -455,10 +494,11 @@ def run(args):
     started = time.monotonic()
     motion_warned = {'done': False}
 
-    resolver = Resolver(zones, args.stop_speed)
+    resolver = Resolver(zones)
 
     def on_op(msg):
-        state['op'] = int(msg.data)
+        # ooii: RobotMoveState 载荷在 robot_move_state 字段（uint8，九值 0–8）。
+        state['op'] = int(msg.robot_move_state)
 
     def on_motion(msg):
         state['motion_seen'] = True
@@ -466,7 +506,8 @@ def run(args):
         state['w'] = float(msg.w_car)
         state['lift'] = float(msg.lift_height)
 
-    node.create_subscription(Int32, args.op_topic, on_op, op_qos)
+    # ooii: 订阅新的避障状态类型（V0.2 话题 /robot_move_state，可用 --op-topic 覆盖）。
+    node.create_subscription(RobotMoveState, args.op_topic, on_op, op_qos)
     # 与 regulated 的 MotionStateSubscriber（SensorDataQoS / BEST_EFFORT）保持一致：
     # BEST_EFFORT 订阅端同时兼容实车运控的 BEST_EFFORT 和仿真的 RELIABLE 发布端。
     node.create_subscription(
@@ -503,7 +544,7 @@ def run(args):
             for note in notes + tier_notes:
                 node.get_logger().warn(note)
             node.get_logger().info(
-                f'{args.op_topic}={op} ({OP_TO_NAME.get(op, "未定义")}) -> '
+                f'{args.op_topic}={op} ({MOVE_STATE_NAME.get(op, "未定义")}) -> '
                 f'{describe(zones, resolved, tier)}')
 
     node.create_timer(args.period, tick)
@@ -537,14 +578,14 @@ def main(argv=None):
     parser.add_argument('--spec', help='spec_table 路径，缺省取 zones-dir 下与档位对应的文件')
     parser.add_argument('--self-check', action='store_true',
                         help='只核对顶点与 spec_table.md，不启动 ROS')
-    parser.add_argument('--op-topic', default='/car_op_status')
+    # ooii: V0.2 协议话题名为 /robot_move_state。
+    parser.add_argument('--op-topic', default='/robot_move_state',
+                        help='RobotMoveState 话题（V0.2 协议为 /robot_move_state）')
     parser.add_argument('--motion-topic', default='/motion_state')
     parser.add_argument('--marker-topic', default='/car_op_zones/markers')
     parser.add_argument('--frame-id', default='base_link')
     parser.add_argument('--period', type=float, default=0.1,
                         help='重发周期，秒；与状态发布同频即可')
-    parser.add_argument('--stop-speed', type=float, default=0.02,
-                        help='|v_car| 低于此值视为静止档（保留参数，仅作展示）')
     parser.add_argument('--drive-monitor', action='store_true',
                         help='额外发布 car_op_zones/* 供 demo YAML 的真实 collision_monitor 订阅')
     parser.add_argument('--no-markers', dest='markers', action='store_false',
