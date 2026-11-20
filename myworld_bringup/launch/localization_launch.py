@@ -35,6 +35,7 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time')
     autostart = LaunchConfiguration('autostart')
     params_file = LaunchConfiguration('params_file')
+    amcl_params_file = LaunchConfiguration('amcl_params_file')
     launch_map_server = LaunchConfiguration('launch_map_server')
     lifecycle_manager_name = LaunchConfiguration('lifecycle_manager_name')
     use_composition = LaunchConfiguration('use_composition')
@@ -58,6 +59,9 @@ def generate_launch_description():
 
     configured_params = ParameterFile(RewrittenYaml(source_file=params_file, root_key=namespace, param_rewrites=param_substitutions, convert_types=True), allow_substs=True)
 
+    # amcl 块已被移到 myworld2unused.yaml（entry 链不用）；本独立入口仍需要它。
+    amcl_configured_params = ParameterFile(RewrittenYaml(source_file=amcl_params_file, root_key=namespace, param_rewrites=param_substitutions, convert_types=True), allow_substs=True)
+
     stdout_linebuf_envvar = SetEnvironmentVariable('RCUTILS_LOGGING_BUFFERED_STREAM', '1')
 
     declare_namespace_cmd = DeclareLaunchArgument('namespace', default_value='', description='Top-level namespace')
@@ -67,7 +71,10 @@ def generate_launch_description():
     declare_use_sim_time_cmd = DeclareLaunchArgument('use_sim_time', default_value='false', description='Use simulation (Gazebo) clock if true')
 
     declare_params_file_cmd = DeclareLaunchArgument('params_file', default_value=os.path.join(bringup_dir, 'params', 'myworld2.yaml'),
-        description='Full path to the ROS2 parameters file to use for all launched nodes')
+        description='Full path to the ROS2 parameters file to use for map_server')
+
+    declare_amcl_params_file_cmd = DeclareLaunchArgument('amcl_params_file', default_value=os.path.join(bringup_dir, 'params', 'myworld2unused.yaml'),
+        description='Full path to the ROS2 parameters file that keeps the amcl block (moved to myworld2unused.yaml)')
 
     declare_autostart_cmd = DeclareLaunchArgument('autostart', default_value='true', description='Automatically startup the nav2 stack')
 
@@ -87,14 +94,14 @@ def generate_launch_description():
     load_nodes_with_map = GroupAction(condition=IfCondition(PythonExpression(["(", is_composition_disabled, ") and (",is_map_server_enabled, ")"])), actions=[Node(package='nav2_map_server',
                 executable='map_server', name='map_server', output='screen', respawn=use_respawn, respawn_delay=2.0, parameters=[configured_params], arguments=['--ros-args', '--log-level', log_level],
                 remappings=remappings),
-            Node(package='nav2_amcl', executable='amcl', name='amcl', output='screen', respawn=use_respawn, respawn_delay=2.0, parameters=[configured_params],
+            Node(package='nav2_amcl', executable='amcl', name='amcl', output='screen', respawn=use_respawn, respawn_delay=2.0, parameters=[amcl_configured_params],
                 arguments=['--ros-args', '--log-level', log_level], remappings=remappings),
             Node(package='nav2_lifecycle_manager', executable='lifecycle_manager', name=lifecycle_manager_name, output='screen', arguments=['--ros-args', '--log-level', log_level],
                 parameters=[{'use_sim_time': use_sim_time}, {'autostart': autostart}, {'node_names': lifecycle_nodes}])
         ])
 
     load_nodes_without_map = GroupAction(condition=IfCondition(PythonExpression(["(", is_composition_disabled, ") and (", is_map_server_disabled, ")"])), actions=[Node(package='nav2_amcl',
-                executable='amcl', name='amcl', output='screen', respawn=use_respawn, respawn_delay=2.0, parameters=[configured_params], arguments=['--ros-args', '--log-level', log_level],
+                executable='amcl', name='amcl', output='screen', respawn=use_respawn, respawn_delay=2.0, parameters=[amcl_configured_params], arguments=['--ros-args', '--log-level', log_level],
                 remappings=remappings),
             Node(package='nav2_lifecycle_manager', executable='lifecycle_manager', name=lifecycle_manager_name, output='screen', arguments=['--ros-args', '--log-level', log_level],
                 parameters=[{'use_sim_time': use_sim_time}, {'autostart': autostart}, {'node_names': ['amcl']}])
@@ -103,14 +110,14 @@ def generate_launch_description():
     load_composable_nodes_with_map = LoadComposableNodes(condition=IfCondition(PythonExpression(["(", is_composition_enabled, ") and (", is_map_server_enabled, ")"])),
         target_container=container_name_full, composable_node_descriptions=[ComposableNode(package='nav2_map_server', plugin='nav2_map_server::MapServer', name='map_server',
                 parameters=[configured_params], remappings=remappings),
-            ComposableNode(package='nav2_amcl', plugin='nav2_amcl::AmclNode', name='amcl', parameters=[configured_params], remappings=remappings),
+            ComposableNode(package='nav2_amcl', plugin='nav2_amcl::AmclNode', name='amcl', parameters=[amcl_configured_params], remappings=remappings),
             ComposableNode(package='nav2_lifecycle_manager', plugin='nav2_lifecycle_manager::LifecycleManager', name=lifecycle_manager_name, parameters=[{'use_sim_time': use_sim_time,
                              'autostart': autostart,'node_names': lifecycle_nodes}]),
         ],
     )
 
     load_composable_nodes_without_map = LoadComposableNodes(condition=IfCondition(PythonExpression(["(", is_composition_enabled, ") and (", is_map_server_disabled, ")"])),
-        target_container=container_name_full, composable_node_descriptions=[ComposableNode(package='nav2_amcl', plugin='nav2_amcl::AmclNode', name='amcl', parameters=[configured_params],
+        target_container=container_name_full, composable_node_descriptions=[ComposableNode(package='nav2_amcl', plugin='nav2_amcl::AmclNode', name='amcl', parameters=[amcl_configured_params],
                 remappings=remappings),
             ComposableNode(package='nav2_lifecycle_manager', plugin='nav2_lifecycle_manager::LifecycleManager', name=lifecycle_manager_name, parameters=[{'use_sim_time': use_sim_time,
                              'autostart': autostart,'node_names': ['amcl']}]),
@@ -128,6 +135,7 @@ def generate_launch_description():
     ld.add_action(declare_map_yaml_cmd)
     ld.add_action(declare_use_sim_time_cmd)
     ld.add_action(declare_params_file_cmd)
+    ld.add_action(declare_amcl_params_file_cmd)
     ld.add_action(DeclareLaunchArgument('launch_map_server', default_value='true', description='Whether this launch owns the map_server node'))
     ld.add_action(DeclareLaunchArgument('lifecycle_manager_name', default_value='lifecycle_manager_localization', description='Lifecycle manager node name for localization'))
     ld.add_action(declare_autostart_cmd)

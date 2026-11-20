@@ -116,6 +116,10 @@ def main():
     import xml.etree.ElementTree as ET
     share = Path(get_package_share_directory('myworld_bringup'))
     params = yaml.safe_load((args.params_file or share / 'params/myworld2.yaml').read_text())
+    if args.params_file is None:
+        # amcl 块已移入 myworld2unused.yaml（entry 链不用）；本工具播种初始位姿仍需要它。
+        unused = yaml.safe_load((share / 'params/myworld2unused.yaml').read_text()) or {}
+        params.setdefault('amcl', unused['amcl'])
     # Fixed-path never requests a planner. Keep the server available without
     # initializing unused high-resolution lattice lookup tables.
     params['planner_server']['ros__parameters']['planner_plugins'] = ['GridBasedAstar']

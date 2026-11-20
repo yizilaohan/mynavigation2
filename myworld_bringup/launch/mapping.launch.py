@@ -21,7 +21,8 @@ def generate_launch_description():
         DeclareLaunchArgument('ign_partition', default_value=f'myworld_mapping_{os.getpid()}'),
         DeclareLaunchArgument('mapping', default_value='true', choices=['true', 'false']),
         DeclareLaunchArgument('map', default_value=os.path.join(scene, 'myworld2.yaml')),
-        DeclareLaunchArgument('params_file', default_value=os.path.join(share, 'params', 'myworld2.yaml')),
+        DeclareLaunchArgument('params_file', default_value=os.path.join(share, 'params', 'myworld2unused.yaml'),
+                              description='amcl 参数文件；amcl 块已移到 myworld2unused.yaml'),
         SetEnvironmentVariable('IGN_PARTITION', partition),
         SetEnvironmentVariable('IGN_GAZEBO_RESOURCE_PATH', ':'.join([
             '/opt/ros/humble/share', os.path.join(share, 'models'), scene,

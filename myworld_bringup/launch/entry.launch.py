@@ -75,7 +75,6 @@ def generate_launch_description():
     fixed_path_goal_error_log_frequency = LaunchConfiguration('fixed_path_goal_error_log_frequency', default='1.0')
     fixed_path_stack_start_delay = LaunchConfiguration('fixed_path_stack_start_delay', default='3.0')
     navigation_stack_start_delay = LaunchConfiguration('navigation_stack_start_delay', default=fixed_path_stack_start_delay)
-    rviz_start_delay = LaunchConfiguration('rviz_start_delay', default='5.0')
 
     is_navigation = PythonExpression(["'", operation_mode, "' != 'remote'"])
     gazebo_enabled = ["'", use_gazebo, "'.lower() == 'true' and "]
@@ -129,7 +128,7 @@ def generate_launch_description():
         'use_sim_time': use_sim_time,
         'params_file': LaunchConfiguration('params_file'),
         'rviz_config_file': rviz_config_file,
-        'use_rviz': 'false',
+        'use_rviz': use_rviz,
         'namespace': '',
         'use_namespace': 'false',
         # regulated 的 use_collision_monitor 现在也是状态模块总开关；状态模块已在
@@ -174,7 +173,8 @@ def generate_launch_description():
     }
 
     # 两种导航模式共用地图、外部定位、反馈接口和启动顺序，由 operation_mode 选择任务流程。
-    # 子 Launch 的 use_rviz=false 只作用于组内，保留外层 RViz 的默认 true。
+    # 只有一个 RViz，由 regulated 的 rviz_launch.py 负责；use_rviz 透传给它。
+    # remote 模式由 navigation_group 的 is_navigation 条件兜底，不会启动。
     regulated_navigation = TimerAction(
         period=navigation_stack_start_delay, condition=IfCondition(is_navigation),
         actions=[GroupAction(scoped=True, actions=[IncludeLaunchDescription(
@@ -246,7 +246,6 @@ def generate_launch_description():
         DeclareLaunchArgument('fixed_path_goal_error_log_frequency', default_value='1.0', description='Fixed-path goal error log frequency (Hz)'),
         DeclareLaunchArgument('fixed_path_stack_start_delay', default_value='3.0', description='Delay the regulated fixed-path stack for sensors and external localization (s)'),
         DeclareLaunchArgument('navigation_stack_start_delay', default_value=fixed_path_stack_start_delay, description='Shared autonomous/fixed-path stack delay (s); defaults to fixed_path_stack_start_delay for compatibility'),
-        DeclareLaunchArgument('rviz_start_delay', default_value='5.0', description='Delay RViz until localization and sensor transforms are ready (s)'),
 
         # Only sensors and velocity feedback cross the bridge. No Gazebo TF is
         # published; external localization must provide map -> base_link.
@@ -307,12 +306,12 @@ def generate_launch_description():
                         '--zone-frame', 'base_link',
                         '--profile', 'sim',
                         '--no-passthrough']),
-        Node(condition=IfCondition(PythonExpression(gazebo_enabled + ["'", operation_mode, "' == 'remote'"])), package='myworld_bringup', executable='chassis_control_to_twist.py', name='chassis_control_to_twist', output='screen',
-            parameters=[LaunchConfiguration('params_file'), {'use_sim_time': use_sim_time}]),
-
         regulated_navigation,
 
-        TimerAction(period=rviz_start_delay, condition=IfCondition(PythonExpression(["'", operation_mode, "' != 'remote' and '", use_rviz, "' == 'true'"])), actions=[Node(package='rviz2',
-                    executable='rviz2', name='rviz2', arguments=['-d', rviz_config_file], parameters=[{'use_sim_time': use_sim_time}], output='screen'),
+        # 每次启动必定重定位：延迟后向外部定位发布初始位姿种子（模拟 RViz 手动
+        # 2D Pose Estimate），短期内重复发送以免外部定位未就绪时错过，随后节点退出。
+        # 位姿与发送参数全部配置在 scripts/initial_pose_pub.py，不在此暴露参数。
+        TimerAction(period=8.0, actions=[Node(package='myworld_bringup',
+                    executable='initial_pose_pub.py', name='initial_pose_pub', output='screen'),
             ]),
     ])
